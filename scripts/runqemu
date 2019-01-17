@@ -74,6 +74,9 @@ of the following environment variables (in any order):
   MACHINE - the machine name (optional, autodetected from KERNEL filename if unspecified)
   Simplified QEMU command-line options can be passed with:
     nographic - disable video console
+    gl - enable virgl-based GL acceleration
+    gl-es - enable virgl-based GL acceleration, using OpenGL ES
+    egl-headless - enable headless EGL output; use vnc or spice to see it
     serial - enable a serial console on /dev/ttyS0
     serialstdio - enable a serial console on the console (regardless of graphics mode)
     slirp - enable user networking, no root privileges is required
@@ -427,12 +430,30 @@ class BaseConfig(object):
                 sys.argv.remove(quiet)
 
         unknown_arg = ""
+        displayopts = ' -vga vmware'
         for arg in sys.argv[1:]:
             if arg in self.fstypes + self.vmtypes:
                 self.check_arg_fstype(arg)
             elif arg == 'nographic':
                 self.qemu_opt_script += ' -nographic'
                 self.kernel_cmdline_script += ' console=ttyS0'
+            elif arg == 'gl':
+                displayopts = ' -vga virtio -display gtk,gl=on'
+            elif arg == 'gl-es':
+                displayopts = ' -vga virtio -display gtk,gl=es'
+            elif arg == 'egl-headless':
+                displayopts = ' -vga virtio -display egl-headless'
+                try:
+                    # As runqemu can be run within bitbake (when using testimage, for example),
+                    # we need to ensure that we run host pkg-config, and that it does not
+                    # get mis-directed to native build paths set by bitbake.
+                    del os.environ['PKG_CONFIG_PATH']
+                    del os.environ['PKG_CONFIG_DIR']
+                    del os.environ['PKG_CONFIG_LIBDIR']
+                    dripath = subprocess.check_output("PATH=/bin:/usr/bin:$PATH pkg-config --variable=dridriverdir dri", shell=True)
+                except subprocess.CalledProcessError as e:
+                    raise RunQemuError("Could not determine the path to dri drivers on the host via pkg-config.\nPlease install Mesa development files (particularly, dri.pc) on the host machine.")
+                os.environ['LIBGL_DRIVERS_PATH'] = dripath.decode('utf-8').strip()
             elif arg == 'serial':
                 self.kernel_cmdline_script += ' console=ttyS0'
                 self.serialconsole = True
@@ -461,6 +482,9 @@ class BaseConfig(object):
                 self.qemu_opt_script += ' -bios %s' % arg[len('biosfilename='):]
             elif arg.startswith('qemuparams='):
                 self.qemu_opt_script += ' %s' % arg[len('qemuparams='):]
+                # if -vga is passed via qemuparams, default value should no longer apply
+                if '-vga' in self.qemu_opt_script:
+                    displayopts = ""
             elif arg.startswith('bootparams='):
                 self.bootparams = arg[len('bootparams='):]
             elif os.path.exists(arg) or (re.search(':', arg) and re.search('/', arg)):
@@ -478,6 +502,7 @@ class BaseConfig(object):
                     raise RunQemuError("Can't handle two unknown args: %s %s\n"
                                        "Try 'runqemu help' on how to use it" % \
                                         (unknown_arg, arg))
+        self.qemu_opt_script += displayopts
         # Check to make sure it is a valid machine
         if unknown_arg and self.get('MACHINE') != unknown_arg:
             if self.get('DEPLOY_DIR_IMAGE'):
